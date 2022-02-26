@@ -1,11 +1,10 @@
 #![allow(clippy::unusual_byte_groupings)]
 
 fn print_number_of_state<const M: usize, const E: usize>(number_of_state: [[u64; M]; E]) {
-    let mut width = [0; M];
+    let mut width = [3; M];
     print!("  \\m");
     for (m, w) in width.iter_mut().enumerate() {
         let mag = (m as i32 * 2) - M as i32 + 1;
-        *w = mag.to_string().len();
         for same_ene in number_of_state.iter() {
             *w = (*w).max(same_ene[m].to_string().len());
         }
@@ -27,6 +26,30 @@ fn print_number_of_state<const M: usize, const E: usize>(number_of_state: [[u64;
         }
         println!();
     }
+}
+
+pub fn calc_2x2() {
+    let mut number_of_state = [[0u64; 5]; 9];
+    for cell in 0u32..=(1 << 4) - 1 {
+        let mag = cell.count_ones();
+        let slide_y = cell >> 2 | cell << 2 & 0b11_00;
+        let slide_x = cell >> 1 & 0b01_01 | cell << 1 & 0b10_10;
+        let ene = (cell ^ slide_x).count_ones() + (cell ^ slide_y).count_ones();
+        number_of_state[ene as usize][mag as usize] += 1;
+    }
+    print_number_of_state(number_of_state);
+}
+
+pub fn calc_3x3() {
+    let mut number_of_state = [[0u64; 10]; 19];
+    for cell in 0u32..=(1 << 9) - 1 {
+        let mag = cell.count_ones();
+        let slide_y = cell >> 3 | cell << 6 & 0b111_000_000;
+        let slide_x = cell >> 1 & 0b011_011_011 | cell << 2 & 0b100_100_100;
+        let ene = (cell ^ slide_x).count_ones() + (cell ^ slide_y).count_ones();
+        number_of_state[ene as usize][mag as usize] += 1;
+    }
+    print_number_of_state(number_of_state);
 }
 
 pub fn calc_4x4() {
