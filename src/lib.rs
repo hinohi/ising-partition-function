@@ -1,5 +1,7 @@
 #![allow(clippy::unusual_byte_groupings)]
 
+use std::thread;
+
 pub fn print_number_of_state<const M: usize, const E: usize>(number_of_state: [[u64; M]; E]) {
     let mut width = [3; M];
     print!("  \\m");
@@ -77,19 +79,34 @@ pub fn calc_5x5() -> [[u64; 26]; 51] {
     number_of_state
 }
 
-pub fn calc_6x6() -> [[u64; 37]; 73] {
-    let mut number_of_state = [[0; 37]; 73];
-    let mut it = 0;
-    for cell in 0u64..=(1 << 36) - 1 {
-        let mag = cell.count_ones();
-        let slide_y = cell >> 6 | cell << 30 & 0b111111 << 30;
-        let slide_x = cell >> 1 & 0b011111_011111_011111_011111_011111_011111
-            | cell << 5 & 0b100000_100000_100000_100000_100000_100000;
-        let ene = (cell ^ slide_x).count_ones() + (cell ^ slide_y).count_ones();
-        number_of_state[ene as usize][mag as usize] += 1;
-        if cell & 0x3fff_ffff == 0 {
-            eprintln!("{}/64", it);
-            it += 1;
+pub fn calc_6x6(threads: u64) -> [[u64; 37]; 73] {
+    fn calc(start: u64, end: u64) -> [[u64; 37]; 73] {
+        let mut number_of_state = [[0; 37]; 73];
+        for cell in start..end {
+            let mag = cell.count_ones();
+            let slide_y = cell >> 6 | cell << 30 & 0b111111 << 30;
+            let slide_x = cell >> 1 & 0b011111_011111_011111_011111_011111_011111
+                | cell << 5 & 0b100000_100000_100000_100000_100000_100000;
+            let ene = (cell ^ slide_x).count_ones() + (cell ^ slide_y).count_ones();
+            number_of_state[ene as usize][mag as usize] += 1;
+        }
+        number_of_state
+    }
+
+    let mut handles = Vec::new();
+    let n = 1 << 36;
+    for i in 0..threads - 1 {
+        handles.push(thread::spawn(move || {
+            calc(n / threads * i, n / threads * (i + 1))
+        }));
+    }
+    let mut number_of_state = calc(n / threads * (threads - 1), n);
+    for h in handles {
+        let b = h.join().unwrap();
+        for (a, b) in number_of_state.iter_mut().zip(b) {
+            for (a, b) in a.iter_mut().zip(b) {
+                *a += b;
+            }
         }
     }
     number_of_state
