@@ -1,9 +1,9 @@
 use ising_partition_function::*;
 
 fn main() {
-    calc_2x2();
-    calc_3x3();
-    calc_4x4();
-    calc_5x5();
-    calc_6x6();
+    print_number_of_state(calc_2x2());
+    print_number_of_state(calc_3x3());
+    print_number_of_state(calc_4x4());
+    print_number_of_state(calc_5x5());
+    print_number_of_state(calc_6x6());
 }
