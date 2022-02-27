@@ -2,11 +2,7 @@
 
 Explicitly calculate the partition function in a small Ising model.
 
-## Hamiltonian
-
-```math
-H = -J \sum _{\left\langle i,j \right\rangle} \sigma_i \sigma_j -h \sum_{i} \sigma_i
-```
+See [notebook](main.ipynb).
 
 ## Number of state
 
