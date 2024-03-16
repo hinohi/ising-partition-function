@@ -17,8 +17,12 @@ fn main() -> std::io::Result<()> {
     n.save_file("data/5x5.txt")?;
     println!("{}", n);
 
-    let n = calc_6x6(6);
+    let n = calc_6x6(12);
     n.save_file("data/6x6.txt")?;
+    println!("{}", n);
+
+    let n = calc_7x7(12);
+    n.save_file("data/7x7.txt")?;
     println!("{}", n);
     Ok(())
 }

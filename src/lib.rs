@@ -84,7 +84,7 @@ pub fn calc_2x2() -> NumberOfState<5, 9> {
     let mut number_of_state = NumberOfState::new();
     for cell in 0u32..=(1 << 4) - 1 {
         let mag = cell.count_ones();
-        let slide_y = cell >> 2 | cell << 2 & 0b11_00;
+        let slide_y = cell >> 2 | (cell & 0b11) << 2;
         let slide_x = cell >> 1 & 0b01_01 | cell << 1 & 0b10_10;
         let ene = (cell ^ slide_x).count_ones() + (cell ^ slide_y).count_ones();
         number_of_state.incr(ene, mag);
@@ -96,7 +96,7 @@ pub fn calc_3x3() -> NumberOfState<10, 19> {
     let mut number_of_state = NumberOfState::new();
     for cell in 0u32..=(1 << 9) - 1 {
         let mag = cell.count_ones();
-        let slide_y = cell >> 3 | cell << 6 & 0b111_000_000;
+        let slide_y = cell >> 3 | (cell & 0b111) << 6;
         let slide_x = cell >> 1 & 0b011_011_011 | cell << 2 & 0b100_100_100;
         let ene = (cell ^ slide_x).count_ones() + (cell ^ slide_y).count_ones();
         number_of_state.incr(ene, mag);
@@ -108,8 +108,8 @@ pub fn calc_4x4() -> NumberOfState<17, 33> {
     let mut number_of_state = NumberOfState::new();
     for cell in 0u32..=(1 << 16) - 1 {
         let mag = cell.count_ones();
-        let slide_y = cell >> 4 | cell << 12 & 0xf000;
-        let slide_x = cell >> 1 & 0x7777 | cell << 3 & 0x8888;
+        let slide_y = cell >> 4 | (cell & 0b1111) << 12;
+        let slide_x = cell >> 1 & 0b0111_0111_0111_0111 | cell << 3 & 0b1000_1000_1000_1000;
         let ene = (cell ^ slide_x).count_ones() + (cell ^ slide_y).count_ones();
         number_of_state.incr(ene, mag);
     }
@@ -120,7 +120,7 @@ pub fn calc_5x5() -> NumberOfState<26, 51> {
     let mut number_of_state = NumberOfState::new();
     for cell in 0u32..=(1 << 25) - 1 {
         let mag = cell.count_ones();
-        let slide_y = cell >> 5 | cell << 20 & 0b11111 << 20;
+        let slide_y = cell >> 5 | (cell & 0b11111) << 20;
         let slide_x = cell >> 1 & 0b01111_01111_01111_01111_01111
             | cell << 4 & 0b10000_10000_10000_10000_10000;
         let ene = (cell ^ slide_x).count_ones() + (cell ^ slide_y).count_ones();
@@ -134,7 +134,7 @@ pub fn calc_6x6(threads: u64) -> NumberOfState<37, 73> {
         let mut number_of_state = NumberOfState::new();
         for cell in start..end {
             let mag = cell.count_ones();
-            let slide_y = cell >> 6 | cell << 30 & 0b111111 << 30;
+            let slide_y = cell >> 6 | (cell & 0b111111) << 30;
             let slide_x = cell >> 1 & 0b011111_011111_011111_011111_011111_011111
                 | cell << 5 & 0b100000_100000_100000_100000_100000_100000;
             let ene = (cell ^ slide_x).count_ones() + (cell ^ slide_y).count_ones();
@@ -145,6 +145,34 @@ pub fn calc_6x6(threads: u64) -> NumberOfState<37, 73> {
 
     let mut handles = Vec::new();
     let n = 1 << 36;
+    for i in 0..threads - 1 {
+        handles.push(thread::spawn(move || {
+            calc(n / threads * i, n / threads * (i + 1))
+        }));
+    }
+    let mut number_of_state = calc(n / threads * (threads - 1), n);
+    for h in handles {
+        number_of_state += h.join().unwrap();
+    }
+    number_of_state
+}
+
+pub fn calc_7x7(threads: u64) -> NumberOfState<50, 99> {
+    fn calc(start: u64, end: u64) -> NumberOfState<50, 99> {
+        let mut number_of_state = NumberOfState::new();
+        for cell in start..end {
+            let mag = cell.count_ones();
+            let slide_y = cell >> 7 | (cell & 0b1111111) << 42;
+            let slide_x = cell >> 1 & 0b0111111_0111111_0111111_0111111_0111111_0111111_0111111
+                | cell << 6 & 0b1000000_1000000_1000000_1000000_1000000_1000000_1000000;
+            let ene = (cell ^ slide_x).count_ones() + (cell ^ slide_y).count_ones();
+            number_of_state.incr(ene, mag);
+        }
+        number_of_state
+    }
+
+    let mut handles = Vec::new();
+    let n = 1 << 49;
     for i in 0..threads - 1 {
         handles.push(thread::spawn(move || {
             calc(n / threads * i, n / threads * (i + 1))
