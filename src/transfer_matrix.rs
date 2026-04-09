@@ -23,8 +23,17 @@ pub fn calc_7x7_transfer() -> NumberOfState<50, 99> {
 pub fn calc_8x8_transfer() -> NumberOfState<65, 129> {
     poly_to_nos(&calc_transfer(8), 65)
 }
+pub fn calc_9x9_transfer() -> NumberOfState<82, 163> {
+    poly_to_nos(&calc_transfer(9), 82)
+}
+pub fn calc_10x10_transfer() -> NumberOfState<101, 201> {
+    poly_to_nos(&calc_transfer(10), 101)
+}
 
-fn poly_to_nos<const M: usize, const E: usize>(poly: &[u64], m_size: usize) -> NumberOfState<M, E> {
+fn poly_to_nos<const M: usize, const E: usize>(
+    poly: &[u128],
+    m_size: usize,
+) -> NumberOfState<M, E> {
     let mut nos = NumberOfState::<M, E>::new();
     for e in 0..E {
         for m in 0..M {
@@ -58,7 +67,6 @@ fn compute_dihedral_orbits(n: usize) -> Vec<(usize, usize)> {
             continue;
         }
         let mut size = 0;
-        // Apply all n rotations to s
         let mut cur = s;
         for _ in 0..n {
             if !visited[cur] {
@@ -67,7 +75,6 @@ fn compute_dihedral_orbits(n: usize) -> Vec<(usize, usize)> {
             }
             cur = ((cur >> 1) | ((cur & 1) << (n - 1))) & mask;
         }
-        // Apply all n rotations to reverse(s)
         cur = reverse_bits(s, n);
         for _ in 0..n {
             if !visited[cur] {
@@ -87,7 +94,10 @@ fn compute_dihedral_orbits(n: usize) -> Vec<(usize, usize)> {
 /// Uses dihedral symmetry (cyclic translation + reflection) to reduce
 /// the number of independent rows from 2^N to the number of binary bracelets,
 /// giving approximately N-fold speedup.
-fn calc_transfer(n: usize) -> Vec<u64> {
+///
+/// The last `fused_steps` multiplication steps are fused with the trace
+/// computation in u128 to avoid u64 overflow for large N.
+fn calc_transfer(n: usize) -> Vec<u128> {
     let dim = 1usize << n;
     let e_size = 2 * n * n + 1;
     let m_size = n * n + 1;
@@ -97,7 +107,6 @@ fn calc_transfer(n: usize) -> Vec<u64> {
     let orbits = compute_dihedral_orbits(n);
     let num_orbits = orbits.len();
 
-    // Precompute per-row horizontal energy and magnetization
     let h_ene: Vec<usize> = (0..dim)
         .map(|j| {
             let j = j as u32;
@@ -107,7 +116,6 @@ fn calc_transfer(n: usize) -> Vec<u64> {
         .collect();
     let mag: Vec<usize> = (0..dim).map(|j| (j as u32).count_ones() as usize).collect();
 
-    // Group bit-flip deltas by Hamming weight (= vertical energy).
     let by_popcount: Vec<Vec<usize>> = (0..=n)
         .map(|v| {
             (0..dim)
@@ -116,7 +124,10 @@ fn calc_transfer(n: usize) -> Vec<u64> {
         })
         .collect();
 
-    // Initialize A = T^1 (num_orbits × dim × poly_size)
+    // For large N, fuse more steps with the trace to avoid u64 overflow
+    let fused_steps = if n >= 10 { 2 } else { 1 };
+    let main_steps = (n - 1).saturating_sub(fused_steps);
+
     let mut a = vec![0u64; num_orbits * dim * poly_size];
     for (oi, &(rep, _)) in orbits.iter().enumerate() {
         for to in 0..dim {
@@ -131,8 +142,7 @@ fn calc_transfer(n: usize) -> Vec<u64> {
         .map(|p| p.get().min(MAX_THREADS).min(num_orbits))
         .unwrap_or(1);
 
-    for step in 0..n - 1 {
-        // Step-constant bounds (no per-entry min needed)
+    for step in 0..main_steps {
         let e_max = 2 * n * (step + 1);
         let m_len = n * (step + 1) + 1;
 
@@ -170,7 +180,6 @@ fn calc_transfer(n: usize) -> Vec<u64> {
                                 let de = h + v;
 
                                 if group.len() == 1 {
-                                    // Single element: skip temp, add directly to B
                                     let k = j ^ group[0];
                                     let a_base = (oi * dim + k) * poly_size;
                                     for e in 0..=e_max {
@@ -184,7 +193,6 @@ fn calc_transfer(n: usize) -> Vec<u64> {
                                     continue;
                                 }
 
-                                // Multi-element: accumulate into temp (copy first, add rest)
                                 let k0 = j ^ group[0];
                                 let a0 = (oi * dim + k0) * poly_size;
                                 for e in 0..=e_max {
@@ -203,7 +211,6 @@ fn calc_transfer(n: usize) -> Vec<u64> {
                                     }
                                 }
 
-                                // Shifted add: B[oi][j] += shift(temp, de, dm)
                                 for e in 0..=e_max {
                                     let src = &temp[e * m_size..][..m_len];
                                     let dst =
@@ -222,13 +229,123 @@ fn calc_transfer(n: usize) -> Vec<u64> {
         std::mem::swap(&mut a, &mut b);
     }
 
-    // Trace: Z = Σ_α |orbit(α)| × A[α][rep(α)]
-    let mut result = vec![0u64; poly_size];
-    for (oi, &(rep, size)) in orbits.iter().enumerate() {
-        let base = (oi * dim + rep) * poly_size;
-        for (r, &val) in result.iter_mut().zip(&a[base..]) {
-            *r += val * size as u64;
+    // Free B to reclaim memory for the fused trace
+    drop(b);
+
+    // A = T^(main_steps + 1) = T^(n - fused_steps)
+    let mut result = vec![0u128; poly_size];
+
+    if fused_steps == 1 {
+        // Single-step fused trace: Tr(A × T_one) in u128
+        let e_max_a = 2 * n * (n - 1);
+        let m_len_a = n * (n - 1) + 1;
+
+        for (oi, &(rep, orbit_size)) in orbits.iter().enumerate() {
+            let h = h_ene[rep];
+            let dm = mag[rep];
+            let size128 = orbit_size as u128;
+
+            for (v, group) in by_popcount.iter().enumerate() {
+                let de = h + v;
+                for &delta in group.iter() {
+                    let k = rep ^ delta;
+                    let a_base = (oi * dim + k) * poly_size;
+                    for e in 0..=e_max_a {
+                        let src = &a[a_base + e * m_size..][..m_len_a];
+                        let dst = &mut result[(e + de) * m_size + dm..][..m_len_a];
+                        for (d, &s) in dst.iter_mut().zip(src) {
+                            *d += s as u128 * size128;
+                        }
+                    }
+                }
+            }
         }
+    } else {
+        // Two-step fused trace: temp = A × T_one (u128), then Tr(temp × T_one) in u128
+        // Parallelized: each thread processes a subset of orbits with its own temp buffer
+        let e_max_a = 2 * n * (n - 2);
+        let m_len_a = n * (n - 2) + 1;
+        let e_max_temp = 2 * n * (n - 1);
+        let m_len_temp = n * (n - 1) + 1;
+
+        std::thread::scope(|scope| {
+            let a = a.as_slice();
+            let h_ene = &h_ene;
+            let mag = &mag;
+            let by_popcount = &by_popcount;
+            let orbits = &orbits;
+            let orbits_per_thread = num_orbits.div_ceil(num_threads);
+
+            let handles: Vec<_> = (0..num_threads)
+                .map(|tid| {
+                    let oi_start = tid * orbits_per_thread;
+                    let oi_end = (oi_start + orbits_per_thread).min(num_orbits);
+                    scope.spawn(move || {
+                        if oi_start >= num_orbits {
+                            return vec![0u128; 0];
+                        }
+                        let mut partial = vec![0u128; poly_size];
+                        let mut temp = vec![0u128; dim * poly_size];
+
+                        for oi in oi_start..oi_end {
+                            // Step 1: temp[l] = Σ_k A[oi][k] ⊗ T_one[k][l]
+                            temp.fill(0);
+                            for l in 0..dim {
+                                let h = h_ene[l];
+                                let dm = mag[l];
+                                for (v, group) in by_popcount.iter().enumerate() {
+                                    let de = h + v;
+                                    for &delta in group.iter() {
+                                        let k = l ^ delta;
+                                        let a_base = (oi * dim + k) * poly_size;
+                                        let t_base = l * poly_size;
+                                        for e in 0..=e_max_a {
+                                            let src = &a[a_base + e * m_size..][..m_len_a];
+                                            let dst = &mut temp[t_base + (e + de) * m_size + dm..]
+                                                [..m_len_a];
+                                            for (d, &s) in dst.iter_mut().zip(src) {
+                                                *d += s as u128;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Step 2: partial += |oi| × Σ_l temp[l] ⊗ T_one[l][rep]
+                            let (rep, orbit_size) = orbits[oi];
+                            let h = h_ene[rep];
+                            let dm = mag[rep];
+                            let size128 = orbit_size as u128;
+                            for (v, group) in by_popcount.iter().enumerate() {
+                                let de = h + v;
+                                for &delta in group.iter() {
+                                    let l = rep ^ delta;
+                                    let t_base = l * poly_size;
+                                    for e in 0..=e_max_temp {
+                                        let src = &temp[t_base + e * m_size..][..m_len_temp];
+                                        let dst =
+                                            &mut partial[(e + de) * m_size + dm..][..m_len_temp];
+                                        for (d, &s) in dst.iter_mut().zip(src) {
+                                            *d += s * size128;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        partial
+                    })
+                })
+                .collect();
+
+            for handle in handles {
+                let partial = handle.join().unwrap();
+                if !partial.is_empty() {
+                    for (r, &p) in result.iter_mut().zip(partial.iter()) {
+                        *r += p;
+                    }
+                }
+            }
+        });
     }
 
     result
@@ -240,17 +357,14 @@ mod tests {
 
     #[test]
     fn test_dihedral_orbits() {
-        // N=2: 3 bracelets, dim=4
         let orbits = compute_dihedral_orbits(2);
         assert_eq!(orbits.iter().map(|o| o.1).sum::<usize>(), 4);
         assert_eq!(orbits.len(), 3);
 
-        // N=7: 18 bracelets, dim=128
         let orbits = compute_dihedral_orbits(7);
         assert_eq!(orbits.iter().map(|o| o.1).sum::<usize>(), 128);
         assert_eq!(orbits.len(), 18);
 
-        // N=8: 30 bracelets, dim=256
         let orbits = compute_dihedral_orbits(8);
         assert_eq!(orbits.iter().map(|o| o.1).sum::<usize>(), 256);
         assert_eq!(orbits.len(), 30);
@@ -280,15 +394,9 @@ mod tests {
     fn test_7x7_total_and_symmetry() {
         let r = calc_7x7_transfer();
 
-        let total: u128 = r
-            .data
-            .iter()
-            .flat_map(|row| row.iter())
-            .map(|&x| x as u128)
-            .sum();
+        let total: u128 = r.data.iter().flat_map(|row| row.iter()).copied().sum();
         assert_eq!(total, 1u128 << 49);
 
-        // Spin-flip symmetry: count(e, m) == count(e, N^2 - m)
         for e in 0..99 {
             for m in 0..25 {
                 assert_eq!(

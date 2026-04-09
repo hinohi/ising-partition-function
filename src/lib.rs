@@ -6,7 +6,7 @@ use std::{fmt::Write as FmtWrite, fs::File, io::Write, path::Path, thread};
 
 #[derive(Debug, PartialEq)]
 pub struct NumberOfState<const M: usize, const E: usize> {
-    pub(crate) data: [[u64; M]; E],
+    pub(crate) data: [[u128; M]; E],
 }
 
 impl<const M: usize, const E: usize> NumberOfState<M, E> {
