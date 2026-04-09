@@ -34,17 +34,68 @@ fn poly_to_nos<const M: usize, const E: usize>(poly: &[u64], m_size: usize) -> N
     nos
 }
 
+fn reverse_bits(x: usize, n: usize) -> usize {
+    let mut result = 0;
+    let mut x = x;
+    for _ in 0..n {
+        result = (result << 1) | (x & 1);
+        x >>= 1;
+    }
+    result
+}
+
+/// Compute orbits of {0, ..., 2^n - 1} under the dihedral group D_n
+/// (cyclic bit rotation + bit reversal).
+/// Returns vec of (representative, orbit_size). Representative is the minimum element.
+fn compute_dihedral_orbits(n: usize) -> Vec<(usize, usize)> {
+    let dim = 1usize << n;
+    let mask = dim - 1;
+    let mut visited = vec![false; dim];
+    let mut orbits = Vec::new();
+
+    for s in 0..dim {
+        if visited[s] {
+            continue;
+        }
+        let mut size = 0;
+        // Apply all n rotations to s
+        let mut cur = s;
+        for _ in 0..n {
+            if !visited[cur] {
+                visited[cur] = true;
+                size += 1;
+            }
+            cur = ((cur >> 1) | ((cur & 1) << (n - 1))) & mask;
+        }
+        // Apply all n rotations to reverse(s)
+        cur = reverse_bits(s, n);
+        for _ in 0..n {
+            if !visited[cur] {
+                visited[cur] = true;
+                size += 1;
+            }
+            cur = ((cur >> 1) | ((cur & 1) << (n - 1))) & mask;
+        }
+        orbits.push((s, size));
+    }
+
+    orbits
+}
+
 /// Transfer matrix method for N x N periodic Ising model.
 ///
-/// Key optimization: group source rows by vertical energy (Hamming weight of XOR).
-/// This reduces shifted adds from dim to (n+1) per target row, replacing
-/// the rest with cheaper unshifted accumulation into a temp buffer.
+/// Uses dihedral symmetry (cyclic translation + reflection) to reduce
+/// the number of independent rows from 2^N to the number of binary bracelets,
+/// giving approximately N-fold speedup.
 fn calc_transfer(n: usize) -> Vec<u64> {
     let dim = 1usize << n;
     let e_size = 2 * n * n + 1;
     let m_size = n * n + 1;
     let poly_size = e_size * m_size;
     let row_mask = (1u32 << n) - 1;
+
+    let orbits = compute_dihedral_orbits(n);
+    let num_orbits = orbits.len();
 
     // Precompute per-row horizontal energy and magnetization
     let h_ene: Vec<usize> = (0..dim)
@@ -57,7 +108,6 @@ fn calc_transfer(n: usize) -> Vec<u64> {
     let mag: Vec<usize> = (0..dim).map(|j| (j as u32).count_ones() as usize).collect();
 
     // Group bit-flip deltas by Hamming weight (= vertical energy).
-    // For target row j, source rows with vertical energy v are { j ^ delta : delta in group[v] }.
     let by_popcount: Vec<Vec<usize>> = (0..=n)
         .map(|v| {
             (0..dim)
@@ -66,19 +116,19 @@ fn calc_transfer(n: usize) -> Vec<u64> {
         })
         .collect();
 
-    // Initialize A = T^1
-    let mut a = vec![0u64; dim * dim * poly_size];
-    for from in 0..dim {
+    // Initialize A = T^1 (num_orbits × dim × poly_size)
+    let mut a = vec![0u64; num_orbits * dim * poly_size];
+    for (oi, &(rep, _)) in orbits.iter().enumerate() {
         for to in 0..dim {
-            let de = h_ene[to] + ((from as u32) ^ (to as u32)).count_ones() as usize;
+            let de = h_ene[to] + ((rep as u32) ^ (to as u32)).count_ones() as usize;
             let dm = mag[to];
-            a[(from * dim + to) * poly_size + de * m_size + dm] = 1;
+            a[(oi * dim + to) * poly_size + de * m_size + dm] = 1;
         }
     }
 
-    let mut b = vec![0u64; dim * dim * poly_size];
+    let mut b = vec![0u64; num_orbits * dim * poly_size];
     let num_threads = std::thread::available_parallelism()
-        .map(|p| p.get().min(MAX_THREADS))
+        .map(|p| p.get().min(MAX_THREADS).min(num_orbits))
         .unwrap_or(1);
 
     for step in 0..n - 1 {
@@ -93,24 +143,24 @@ fn calc_transfer(n: usize) -> Vec<u64> {
             let h_ene = &h_ene;
             let mag = &mag;
             let by_popcount = &by_popcount;
-            let rows_per_thread = dim.div_ceil(num_threads);
+            let orbits_per_thread = num_orbits.div_ceil(num_threads);
             let mut b_rest = b.as_mut_slice();
 
             for tid in 0..num_threads {
-                let i_start = tid * rows_per_thread;
-                if i_start >= dim {
+                let oi_start = tid * orbits_per_thread;
+                if oi_start >= num_orbits {
                     break;
                 }
-                let i_end = (i_start + rows_per_thread).min(dim);
-                let num_rows = i_end - i_start;
-                let (chunk, tail) = b_rest.split_at_mut(num_rows * dim * poly_size);
+                let oi_end = (oi_start + orbits_per_thread).min(num_orbits);
+                let num_oi = oi_end - oi_start;
+                let (chunk, tail) = b_rest.split_at_mut(num_oi * dim * poly_size);
                 b_rest = tail;
 
                 scope.spawn(move || {
                     let mut temp = vec![0u64; poly_size];
 
-                    for i in i_start..i_end {
-                        let li = i - i_start;
+                    for oi in oi_start..oi_end {
+                        let li = oi - oi_start;
                         for j in 0..dim {
                             let h = h_ene[j];
                             let dm = mag[j];
@@ -122,7 +172,7 @@ fn calc_transfer(n: usize) -> Vec<u64> {
                                 if group.len() == 1 {
                                     // Single element: skip temp, add directly to B
                                     let k = j ^ group[0];
-                                    let a_base = (i * dim + k) * poly_size;
+                                    let a_base = (oi * dim + k) * poly_size;
                                     for e in 0..=e_max {
                                         let src = &a[a_base + e * m_size..][..m_len];
                                         let dst =
@@ -136,14 +186,14 @@ fn calc_transfer(n: usize) -> Vec<u64> {
 
                                 // Multi-element: accumulate into temp (copy first, add rest)
                                 let k0 = j ^ group[0];
-                                let a0 = (i * dim + k0) * poly_size;
+                                let a0 = (oi * dim + k0) * poly_size;
                                 for e in 0..=e_max {
                                     temp[e * m_size..][..m_len]
                                         .copy_from_slice(&a[a0 + e * m_size..][..m_len]);
                                 }
                                 for &delta in &group[1..] {
                                     let k = j ^ delta;
-                                    let a_base = (i * dim + k) * poly_size;
+                                    let a_base = (oi * dim + k) * poly_size;
                                     for e in 0..=e_max {
                                         let src = &a[a_base + e * m_size..][..m_len];
                                         let dst = &mut temp[e * m_size..][..m_len];
@@ -153,7 +203,7 @@ fn calc_transfer(n: usize) -> Vec<u64> {
                                     }
                                 }
 
-                                // Shifted add: B[li][j] += shift(temp, de, dm)
+                                // Shifted add: B[oi][j] += shift(temp, de, dm)
                                 for e in 0..=e_max {
                                     let src = &temp[e * m_size..][..m_len];
                                     let dst =
@@ -172,12 +222,12 @@ fn calc_transfer(n: usize) -> Vec<u64> {
         std::mem::swap(&mut a, &mut b);
     }
 
-    // Trace
+    // Trace: Z = Σ_α |orbit(α)| × A[α][rep(α)]
     let mut result = vec![0u64; poly_size];
-    for i in 0..dim {
-        let base = (i * dim + i) * poly_size;
+    for (oi, &(rep, size)) in orbits.iter().enumerate() {
+        let base = (oi * dim + rep) * poly_size;
         for (r, &val) in result.iter_mut().zip(&a[base..]) {
-            *r += val;
+            *r += val * size as u64;
         }
     }
 
@@ -187,6 +237,24 @@ fn calc_transfer(n: usize) -> Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_dihedral_orbits() {
+        // N=2: 3 bracelets, dim=4
+        let orbits = compute_dihedral_orbits(2);
+        assert_eq!(orbits.iter().map(|o| o.1).sum::<usize>(), 4);
+        assert_eq!(orbits.len(), 3);
+
+        // N=7: 18 bracelets, dim=128
+        let orbits = compute_dihedral_orbits(7);
+        assert_eq!(orbits.iter().map(|o| o.1).sum::<usize>(), 128);
+        assert_eq!(orbits.len(), 18);
+
+        // N=8: 30 bracelets, dim=256
+        let orbits = compute_dihedral_orbits(8);
+        assert_eq!(orbits.iter().map(|o| o.1).sum::<usize>(), 256);
+        assert_eq!(orbits.len(), 30);
+    }
 
     #[test]
     fn matches_brute_force_2x2() {
