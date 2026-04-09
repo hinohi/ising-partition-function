@@ -1,6 +1,5 @@
 #![allow(clippy::unusual_byte_groupings)]
 
-pub mod gpu;
 pub mod transfer_matrix;
 
 use std::{fmt::Write as FmtWrite, fs::File, io::Write, path::Path, thread};
