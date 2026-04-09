@@ -1,6 +1,7 @@
 #![allow(clippy::unusual_byte_groupings)]
 
 pub mod gpu;
+pub mod transfer_matrix;
 
 use std::{fmt::Write as FmtWrite, fs::File, io::Write, path::Path, thread};
 
@@ -8,7 +9,6 @@ use std::{fmt::Write as FmtWrite, fs::File, io::Write, path::Path, thread};
 pub struct NumberOfState<const M: usize, const E: usize> {
     pub(crate) data: [[u64; M]; E],
 }
-
 
 impl<const M: usize, const E: usize> NumberOfState<M, E> {
     pub fn new() -> NumberOfState<M, E> {
